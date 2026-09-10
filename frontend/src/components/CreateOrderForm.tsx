@@ -57,9 +57,12 @@ export function CreateOrderForm({ onOrderCreated }: { onOrderCreated: () => void
   const errors = validate(clienteNombre, sku, quantity);
   const isValid = Object.keys(errors).length === 0;
 
-  const loadCatalog = () => {
-    setLoadingCatalog(true);
-    setCatalogError(null);
+  // Plain fetch, no state reset — `loadingCatalog`/`catalogError` already start at their
+  // "loading" defaults, so the mount effect below can call this directly without
+  // synchronously setting state as its first act (an anti-pattern oxlint's
+  // react/set-state-in-effect rule flags). The "Reintentar" button below is the one place
+  // that resets state before calling this again, in response to a real click event.
+  const fetchCatalog = () => {
     getStock()
       .then((data) => setProducts(data))
       .catch((error) => {
@@ -72,7 +75,13 @@ export function CreateOrderForm({ onOrderCreated }: { onOrderCreated: () => void
       .finally(() => setLoadingCatalog(false));
   };
 
-  useEffect(loadCatalog, []);
+  useEffect(fetchCatalog, []);
+
+  const retryLoadCatalog = () => {
+    setLoadingCatalog(true);
+    setCatalogError(null);
+    fetchCatalog();
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -144,7 +153,7 @@ export function CreateOrderForm({ onOrderCreated }: { onOrderCreated: () => void
           {catalogError ? (
             <div className="catalog-error">
               <span>{catalogError}</span>
-              <button type="button" onClick={loadCatalog} className="link-button">
+              <button type="button" onClick={retryLoadCatalog} className="link-button">
                 Reintentar
               </button>
             </div>

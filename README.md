@@ -49,6 +49,14 @@ Abrir **http://localhost:5173** — ya se puede crear un pedido y verlo pasar de
 | RabbitMQ (admin)   | http://localhost:15672 (user/pass en `.env.example`) |
 | PostgreSQL         | localhost:5432                     |
 
+**Swagger (OpenAPI):** cada API expone su documentación interactiva en `/swagger` —
+[http://localhost:5081/swagger](http://localhost:5081/swagger) para OrdersApi y
+[http://localhost:5080/swagger](http://localhost:5080/swagger) para InventoryWorker. Queda
+habilitado siempre (incluso corriendo dentro de Docker con `ASPNETCORE_ENVIRONMENT=Production`,
+que es el valor por defecto en `docker-compose.yml`), justamente para que se pueda probar cada
+endpoint (`POST/GET /api/orders`, `GET /api/stock`) desde el navegador sin necesitar Postman
+ni tocar código.
+
 Apagar todo (y borrar los datos, para un arranque 100% limpio la próxima vez):
 
 ```bash

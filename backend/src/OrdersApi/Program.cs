@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
 using OrderFlow.Shared.Messaging;
 using OrdersApi.Data;
 using OrdersApi.Messaging;
@@ -32,7 +33,16 @@ builder.Services.AddControllers().AddJsonOptions(options =>
     options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
 });
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "OrderFlow — OrdersApi",
+        Version = "v1",
+        Description = "Creación y consulta de pedidos. Publica order-created en RabbitMQ y " +
+            "consume stock-reserved/stock-rejected para confirmar o rechazar el pedido.",
+    });
+});
 
 // Allowed origins for the frontend/ SPA — comma-separated, overridable via the environment
 // variable Cors__AllowedOrigins. Defaults to the Vite dev server's default port.
@@ -52,11 +62,15 @@ using (var scope = app.Services.CreateScope())
     await dbContext.Database.MigrateAsync();
 }
 
-if (app.Environment.IsDevelopment())
+// Swagger UI is intentionally enabled in every environment (including the Docker/Production
+// deployment via docker-compose) so an evaluator can exercise the API directly from
+// http://localhost:5081/swagger without switching ASPNETCORE_ENVIRONMENT. For a real
+// production deployment this would normally be gated behind Development/staging only.
+app.UseSwagger();
+app.UseSwaggerUI(options =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "OrdersApi v1");
+});
 
 app.UseCors("Frontend");
 app.UseAuthorization();

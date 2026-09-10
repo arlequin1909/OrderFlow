@@ -1,6 +1,18 @@
-@OrdersApi_HostAddress = http://localhost:5043
+@OrdersApi_HostAddress = http://localhost:5081
 
-GET {{OrdersApi_HostAddress}}/weatherforecast/
+GET {{OrdersApi_HostAddress}}/api/orders
 Accept: application/json
+
+###
+
+POST {{OrdersApi_HostAddress}}/api/orders
+Content-Type: application/json
+
+{
+  "clienteNombre": "Juan Perez",
+  "items": [
+    { "sku": "ABC-01", "quantity": 3 }
+  ]
+}
 
 ###

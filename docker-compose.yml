@@ -1,7 +1,7 @@
-# Infra para desarrollo local: PostgreSQL + RabbitMQ.
-# OrdersApi e InventoryWorker se ejecutan con `dotnet run` (o su propio contenedor si se
-# añade más adelante) apuntando a estos servicios mediante las variables de entorno
-# ConnectionStrings__Postgres y RabbitMq__*, definidas en .env (ver .env.example).
+# `docker compose up --build` levanta el sistema completo sin pasos manuales:
+# Postgres + RabbitMQ -> (esperan a estar healthy) -> OrdersApi + InventoryWorker (aplican
+# migraciones y cargan el seed de stock automáticamente al arrancar) -> frontend (nginx
+# sirviendo el build de producción de la SPA). Ver README.md para el detalle.
 
 services:
   postgres:
@@ -39,6 +39,75 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  ordersapi:
+    build:
+      context: ./backend
+      dockerfile: src/OrdersApi/Dockerfile
+    container_name: orderflow-ordersapi
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      # Points at the "postgres"/"rabbitmq" service names — resolved via Docker's internal
+      # network, not localhost (this container is not the same network namespace as those).
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-orderflow};Username=${POSTGRES_USER:-orderflow};Password=${POSTGRES_PASSWORD:-orderflow}"
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: ${RABBITMQ_DEFAULT_USER:-orderflow}
+      RabbitMq__Password: ${RABBITMQ_DEFAULT_PASS:-orderflow}
+      RabbitMq__VirtualHost: /
+      # The browser (not this container) calls OrdersApi directly, from the frontend's origin.
+      Cors__AllowedOrigins: "http://localhost:${FRONTEND_PORT:-5173}"
+    ports:
+      - "${ORDERS_API_PORT:-5081}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  inventoryworker:
+    build:
+      context: ./backend
+      dockerfile: src/InventoryWorker/Dockerfile
+    container_name: orderflow-inventoryworker
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-orderflow};Username=${POSTGRES_USER:-orderflow};Password=${POSTGRES_PASSWORD:-orderflow}"
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: ${RABBITMQ_DEFAULT_USER:-orderflow}
+      RabbitMq__Password: ${RABBITMQ_DEFAULT_PASS:-orderflow}
+      RabbitMq__VirtualHost: /
+      Cors__AllowedOrigins: "http://localhost:${FRONTEND_PORT:-5173}"
+    ports:
+      - "${INVENTORY_API_PORT:-5080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the static JS bundle at build time — must be the URLs the BROWSER (on
+        # the host) can reach, i.e. the published host ports below, never the internal
+        # Docker service names ("ordersapi"/"inventoryworker" only resolve inside the
+        # compose network, not from the host machine's browser).
+        VITE_ORDERS_API_URL: "http://localhost:${ORDERS_API_PORT:-5081}"
+        VITE_INVENTORY_API_URL: "http://localhost:${INVENTORY_API_PORT:-5080}"
+        VITE_POLL_INTERVAL_MS: "${VITE_POLL_INTERVAL_MS:-4000}"
+    container_name: orderflow-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - ordersapi
+      - inventoryworker
 
 volumes:
   orderflow_postgres_data:

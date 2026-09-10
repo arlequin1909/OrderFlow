@@ -1,6 +1,7 @@
 using InventoryWorker.Data;
 using InventoryWorker.Messaging;
 using InventoryWorker.Seed;
+using InventoryWorker.Services;
 using Microsoft.EntityFrameworkCore;
 using OrderFlow.Shared.Messaging;
 
@@ -20,6 +21,7 @@ builder.Services.AddDbContext<InventoryDbContext>(options =>
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 
 builder.Services.AddSingleton<IStockOutcomePublisher, InventoryEventPublisher>();
+builder.Services.AddScoped<StockReservationService>();
 builder.Services.AddHostedService<OrderCreatedConsumer>();
 
 builder.Services.AddControllers();

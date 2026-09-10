@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using InventoryWorker.Data;
 using InventoryWorker.Models;
-using Microsoft.EntityFrameworkCore;
+using InventoryWorker.Services;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using OrderFlow.Shared.Contracts;
@@ -14,10 +14,11 @@ using RabbitMQ.Client.Events;
 namespace InventoryWorker.Messaging;
 
 /// <summary>
-/// Consumes <see cref="OrderCreatedEvent"/> messages, reserves (decrements) stock when
-/// possible, and replies with <see cref="StockReservedEvent"/> or
-/// <see cref="StockRejectedEvent"/>. See README "Idempotencia y manejo de errores" for the
-/// full policy this class implements.
+/// RabbitMQ plumbing around <see cref="StockReservationService"/>: deserializes/validates the
+/// incoming <see cref="OrderCreatedEvent"/>, delegates the actual idempotency + reservation
+/// logic to the service (see its doc comment for the atlas-checkpoint guard), then publishes
+/// <see cref="StockReservedEvent"/> or <see cref="StockRejectedEvent"/> with the result. See
+/// README "Idempotencia y manejo de errores" for the full policy this class implements.
 /// </summary>
 public class OrderCreatedConsumer : RabbitMqConsumerBase
 {
@@ -99,18 +100,13 @@ public class OrderCreatedConsumer : RabbitMqConsumerBase
 
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+        var reservationService = scope.ServiceProvider.GetRequiredService<StockReservationService>();
 
-        // atlas-checkpoint: guarda de idempotencia. Si esta orden (OrderId) ya tiene una
-        // StockReservation registrada, el stock NUNCA se vuelve a tocar — sin importar
-        // cuántas veces se reentregue este mismo evento (o uno con el mismo OrderId). Si lo
-        // único que faltó la vez anterior fue publicar la notificación de resultado, se
-        // reintenta solo eso; si ya se publicó, se ignora por completo.
-        var existing = await dbContext.StockReservations
-            .FirstOrDefaultAsync(r => r.OrderId == orderEvent.OrderId, cancellationToken);
+        var result = await reservationService.ReserveAsync(dbContext, orderEvent, cancellationToken);
 
-        if (existing is not null)
+        if (result.WasAlreadyProcessed)
         {
-            if (existing.ResponseEventPublished)
+            if (result.Reservation.ResponseEventPublished)
             {
                 _logger.LogInformation(
                     "Orden {OrderId} (eventId {EventId}) ya fue procesada, se omite por idempotencia.",
@@ -120,83 +116,17 @@ public class OrderCreatedConsumer : RabbitMqConsumerBase
 
             _logger.LogInformation(
                 "Orden {OrderId} ya fue procesada como {Outcome} pero su notificación quedó pendiente; reintentando solo la publicación.",
-                orderEvent.OrderId, existing.Outcome);
-            await PublishOutcomeAsync(dbContext, existing, orderEvent.CorrelationId, cancellationToken);
-            return;
-        }
-
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
-
-        var rejectionReason = await TryReserveStockAsync(dbContext, orderEvent, cancellationToken);
-
-        var reservation = new StockReservation
-        {
-            OrderId = orderEvent.OrderId,
-            EventId = orderEvent.EventId,
-            Outcome = rejectionReason is null ? StockReservationOutcome.Reserved : StockReservationOutcome.Rejected,
-            RejectionReason = rejectionReason,
-            ProcessedAtUtc = DateTime.UtcNow,
-        };
-        dbContext.StockReservations.Add(reservation);
-
-        try
-        {
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch (DbUpdateException ex) when (IsUniqueOrderIdViolation(ex))
-        {
-            // Another concurrent delivery of the same order won the race and committed
-            // first (the unique index on OrderId is the final idempotency safety net, on
-            // top of the upfront SELECT check above). Roll back our own stock decrement and
-            // treat this delivery as already handled.
-            await transaction.RollbackAsync(cancellationToken);
-            _logger.LogInformation(
-                "Orden {OrderId} ya fue procesada por una entrega concurrente, se omite por idempotencia.",
-                orderEvent.OrderId);
+                orderEvent.OrderId, result.Reservation.Outcome);
+            await PublishOutcomeAsync(dbContext, result.Reservation, orderEvent.CorrelationId, cancellationToken);
             return;
         }
 
         _logger.LogInformation(
             "Orden {OrderId} procesada como {Outcome}{Reason}",
-            orderEvent.OrderId, reservation.Outcome, rejectionReason is null ? string.Empty : $": {rejectionReason}");
+            orderEvent.OrderId, result.Reservation.Outcome,
+            result.Reservation.RejectionReason is null ? string.Empty : $": {result.Reservation.RejectionReason}");
 
-        await PublishOutcomeAsync(dbContext, reservation, orderEvent.CorrelationId, cancellationToken);
-    }
-
-    /// <summary>
-    /// All-or-nothing: checks every item has enough stock before decrementing any of them.
-    /// Returns null (and decrements the tracked <see cref="Product"/> entities) if the whole
-    /// order can be reserved, or the rejection reason otherwise (nothing is decremented).
-    /// </summary>
-    private static async Task<string?> TryReserveStockAsync(InventoryDbContext dbContext, OrderCreatedEvent orderEvent, CancellationToken cancellationToken)
-    {
-        var skus = orderEvent.Items.Select(i => i.Sku).Distinct().ToList();
-        var products = await dbContext.Products
-            .Where(p => skus.Contains(p.Sku))
-            .ToDictionaryAsync(p => p.Sku, cancellationToken);
-
-        foreach (var item in orderEvent.Items)
-        {
-            if (!products.TryGetValue(item.Sku, out var product))
-            {
-                return $"El SKU '{item.Sku}' no existe en el catálogo de stock.";
-            }
-
-            if (product.StockAvailable < item.Quantity)
-            {
-                return $"Stock insuficiente para el SKU '{item.Sku}' (disponible {product.StockAvailable}, solicitado {item.Quantity}).";
-            }
-        }
-
-        foreach (var item in orderEvent.Items)
-        {
-            var product = products[item.Sku];
-            product.StockAvailable -= item.Quantity;
-            product.UpdatedAtUtc = DateTime.UtcNow;
-        }
-
-        return null;
+        await PublishOutcomeAsync(dbContext, result.Reservation, orderEvent.CorrelationId, cancellationToken);
     }
 
     private async Task PublishOutcomeAsync(InventoryDbContext dbContext, StockReservation reservation, Guid correlationId, CancellationToken cancellationToken)
@@ -231,9 +161,6 @@ public class OrderCreatedConsumer : RabbitMqConsumerBase
                 reservation.OrderId, reservation.Outcome, error);
         }
     }
-
-    private static bool IsUniqueOrderIdViolation(DbUpdateException ex) =>
-        ex.InnerException is PostgresException { SqlState: "23505" };
 
     private static bool IsTransientInfrastructureException(Exception ex) =>
         ex is NpgsqlException or TimeoutException;

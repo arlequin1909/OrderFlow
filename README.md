@@ -1,25 +1,94 @@
 # OrderFlow
 
-Monorepo de la prueba técnica de tienda en línea.
+Prueba técnica de una tienda en línea: un flujo de pedidos orquestado con eventos asíncronos.
+`OrdersApi` recibe y valida pedidos, los publica en RabbitMQ; `InventoryWorker` reserva stock
+de forma idempotente y responde el resultado; `OrdersApi` escucha esa respuesta y confirma o
+rechaza el pedido. Un frontend en React lo expone con creación de pedidos y una lista en vivo.
 
 ```
-backend/    Solución .NET 8 (OrdersApi, InventoryWorker, OrderFlow.Shared)
+backend/    Solución .NET 8: OrdersApi, InventoryWorker, OrderFlow.Shared, OrderFlow.Tests
 frontend/   SPA React + TypeScript (Vite) — crear pedidos y verlos con su estado en vivo
-docker-compose.yml   Infra local: PostgreSQL + RabbitMQ
-.env.example          Variables de entorno de referencia
+docker-compose.yml   Levanta el sistema completo: Postgres, RabbitMQ, ambas APIs y el frontend
+.env.example          Variables de entorno de referencia para docker-compose
 ```
 
-## Backend
+## Levantar todo en menos de 10 minutos
 
-- **OrdersApi**: gestiona órdenes, publica `order-created` en RabbitMQ, y consume
-  `stock-reserved`/`stock-rejected` para actualizar el estado del pedido.
-- **InventoryWorker**: expone el stock (`GET /api/stock`), aplica el seed inicial de
-  productos al arrancar, consume `order-created` de forma idempotente para reservar stock, y
-  publica `stock-reserved` o `stock-rejected` con el resultado.
-- **OrderFlow.Shared**: contratos de eventos, opciones/colas de RabbitMQ,
+Requisito único: Docker Desktop (o Docker Engine + Compose) corriendo.
+
+```bash
+git clone <este-repo> && cd OrderFlow
+docker compose up --build -d
+```
+
+Eso es todo — sin pasos manuales. Un solo comando:
+1. Levanta PostgreSQL y RabbitMQ, y espera a que ambos reporten `healthy`.
+2. Construye las imágenes de `OrdersApi` e `InventoryWorker` (multi-stage: SDK de .NET para
+   compilar, runtime ASP.NET sobre Alpine para ejecutar) y las arranca — cada una aplica sus
+   migraciones de EF Core y, en el caso de `InventoryWorker`, carga el stock inicial
+   automáticamente al arrancar.
+3. Construye el frontend (Node para el build de Vite, nginx Alpine para servirlo) y lo arranca.
+
+En una máquina con la imagen base ya cacheada esto toma 1–3 minutos; en frío (primera vez,
+descargando imágenes base) normalmente no supera los 10.
+
+Verificar que todo quedó arriba:
+
+```bash
+docker compose ps   # los 5 servicios deben verse "Up" (postgres/rabbitmq además "healthy")
+```
+
+Abrir **http://localhost:5173** — ya se puede crear un pedido y verlo pasar de `Pendiente` a
+`Confirmado`/`Rechazado` en la tabla, sin recargar la página.
+
+| Servicio          | URL local                          |
+|-------------------|-------------------------------------|
+| Frontend           | http://localhost:5173              |
+| OrdersApi          | http://localhost:5081/swagger      |
+| InventoryWorker    | http://localhost:5080/swagger      |
+| RabbitMQ (admin)   | http://localhost:15672 (user/pass en `.env.example`) |
+| PostgreSQL         | localhost:5432                     |
+
+Apagar todo (y borrar los datos, para un arranque 100% limpio la próxima vez):
+
+```bash
+docker compose down -v
+```
+
+## Correr los tests (un solo comando)
+
+```bash
+dotnet test backend/OrderFlow.sln
+```
+
+No requiere Docker, Postgres ni RabbitMQ corriendo: los tests usan SQLite en memoria y un
+publisher de eventos falso (ver "Tests" más abajo).
+
+## Arquitectura
+
+```
+                 ┌────────────┐        order-created        ┌──────────────────┐
+  Browser  ───▶  │  OrdersApi │ ───────────────────────────▶ │  InventoryWorker  │
+ (frontend)      │            │                               │                   │
+                 │ Postgres:  │ ◀─────────────────────────── │  Postgres:        │
+                 │ orders,    │   stock-reserved /            │  stock,           │
+                 │ order_items│   stock-rejected              │  stock_reservations│
+                 └────────────┘                               └──────────────────┘
+                        │                                              │
+                        └──────────────── RabbitMQ ────────────────────┘
+```
+
+- **OrdersApi**: `POST/GET /api/orders`. Valida la entrada, persiste el pedido como `Pending`,
+  publica `order-created`, y consume `stock-reserved`/`stock-rejected` para mover el pedido a
+  `Confirmed`/`Rejected`.
+- **InventoryWorker**: `GET /api/stock`. Carga el stock inicial al arrancar, consume
+  `order-created` de forma idempotente y transaccional para reservar (o rechazar) stock, y
+  publica el resultado.
+- **OrderFlow.Shared**: contratos de eventos, opciones/nombres de colas de RabbitMQ,
   `RabbitMqConsumerBase` (reconexión robusta compartida por ambos consumers) y
-  `NebulaSyncHelper` (estampado de EventId/correlationId/timestamp y validación de esquema
+  `NebulaSyncHelper` (estampado de `EventId`/`CorrelationId`/timestamp y validación de esquema
   compartida entre ambos servicios).
+- **frontend**: SPA de React que consume ambas APIs directamente desde el navegador.
 
 ### Flujo de eventos
 
@@ -34,6 +103,56 @@ OrdersApi                    RabbitMQ                    InventoryWorker
    │◀── stock-reserved/rejected ──┼──────────────────────────────┘
    │  Order: Pending → Confirmed/Rejected
 ```
+
+## Decisiones de arquitectura y trade-offs
+
+Estas son las decisiones de diseño más discutibles del proyecto, junto con la razón detrás de
+cada una y lo que se sacrificó a cambio — para que quien lo revise no las lea como
+casualidades.
+
+- **Comunicación asíncrona (RabbitMQ) entre OrdersApi e InventoryWorker, en vez de HTTP
+  síncrono.** Un pedido se acepta aunque InventoryWorker esté caído en ese instante; el
+  trade-off es consistencia eventual (el cliente ve `Pending` hasta que llega la respuesta) y
+  más piezas móviles (colas, idempotencia, reconciliación) que un simple `POST` síncrono.
+- **Una sola instancia de Postgres compartida por ambos servicios** (en vez de una base de
+  datos por servicio, lo "correcto" en microservicios estrictos). Simplifica el
+  `docker-compose` y permite que `OrdersApi` valide la existencia de un SKU leyendo
+  directamente la tabla `stock` de InventoryWorker (`CatalogDbContext`) sin una llamada HTTP
+  adicional. El costo es acoplamiento de esquema entre servicios — documentado explícitamente
+  en el código como algo a resolver con una base por servicio (o esa validación vía HTTP) si
+  esto creciera a un sistema real. Cada servicio sí migra su propio esquema con su propia
+  tabla de historial de migraciones (`__EFMigrationsHistory_orders` /
+  `__EFMigrationsHistory_inventory`) para no pisarse entre sí al arrancar en paralelo.
+- **Ledger de idempotencia propio (`stock_reservations`) en vez de deduplicación del broker.**
+  RabbitMQ no garantiza entrega exactly-once; en vez de depender de configuración del broker,
+  cada orden procesada deja una fila con índice único en `OrderId`, verificada antes de tocar
+  stock. Es una fila más por orden y una consulta extra por mensaje, a cambio de una garantía
+  explícita y testeada (ver sección Tests) en vez de implícita.
+- **"Outbox" simplificado (flags `EventPublished`/`ResponseEventPublished` en vez de un patrón
+  outbox transaccional completo con job de reintento).** Cuando el broker no está disponible
+  al publicar, la escritura en base de datos ya ocurrió y no se revierte; solo se marca que la
+  notificación quedó pendiente. Es la mitad del patrón outbox (el estado durable) sin la otra
+  mitad (el worker que reintenta solo); ver "Qué haría distinto con más tiempo".
+- **Reserva de stock atómica y todo-o-nada por pedido**, no por línea de producto. Si un pedido
+  tiene 3 SKUs y a uno le falta stock, se rechaza el pedido completo en vez de reservar
+  parcialmente — más simple de razonar para el usuario ("tu pedido se confirmó o no") a costa
+  de rechazar pedidos que técnicamente podrían cumplirse parcialmente.
+- **El frontend llama a ambas APIs directamente desde el navegador** (sin un backend-for-frontend
+  ni API Gateway). Para una SPA de este tamaño evita una capa adicional; el costo es que el
+  navegador necesita conocer dos URLs base y ambas APIs necesitan CORS configurado
+  explícitamente para el origen del frontend.
+- **Vite incrusta las URLs de las APIs en el bundle en tiempo de build** (`ARG`/`ENV` en el
+  Dockerfile del frontend), no en tiempo de ejecución. Es la forma estándar de Vite y evita
+  necesitar un servidor de configuración; el costo es que la imagen de frontend queda atada a
+  las URLs con las que se compiló — cambiarlas implica reconstruir la imagen, no solo cambiar
+  una variable de entorno del contenedor en producción.
+- **Contenedores individuales con `docker-compose` en un solo host**, apropiado para esta
+  entrega y para desarrollo local, en vez de una plataforma de orquestación más robusta
+  (Kubernetes) o una infraestructura basada en hiperconvergencia (cómputo + almacenamiento +
+  virtualización administrados como una sola capa, tipo VMware vSAN/Nutanix) pensada para
+  producción con alta disponibilidad real. Ver "Qué haría distinto con más tiempo".
+
+## Backend
 
 ### Endpoints de OrdersApi
 
@@ -52,6 +171,13 @@ OrdersApi                    RabbitMQ                    InventoryWorker
 
 Si la validación pasa, la orden se guarda con `Status = Pending` y se intenta publicar el
 evento `OrderCreated`. Ver la sección siguiente para qué pasa si esa publicación falla.
+
+### Endpoint de InventoryWorker
+
+| Método | Ruta               | Descripción                          |
+|--------|--------------------|----------------------------------------|
+| GET    | `/api/stock`       | Lista el stock de todos los productos. |
+| GET    | `/api/stock/{sku}` | Stock de un SKU puntual.               |
 
 ### Manejo de fallos del broker (RabbitMQ no disponible al publicar)
 
@@ -77,21 +203,14 @@ evento", y un fallo en el segundo paso **no revierte ni bloquea** el primero:
    conexión/canal se crean de forma perezosa en el primer intento de publicar
    (`AutomaticRecoveryEnabled = true`, reconexión automática cada 5s), y se recrean si se
    encuentran cerrados en el siguiente intento — probado apagando y reiniciando el
-   contenedor de RabbitMQ en medio de la prueba.
-
-**Limitación conocida / siguiente paso (no implementado en esta iteración):** no hay
-reintento automático en background para las órdenes con `EventPublished = false`. En
-producción se recomienda:
-- Un job/worker que reintente periódicamente esas órdenes (patrón *transactional outbox*
-  usando los campos `EventPublished`/`EventPublishError` ya existentes).
-- Política de reintento con backoff (ej. Polly) alrededor de `BasicPublish`.
-- Alerta si hay órdenes `Pending` con `EventPublished = false` por más de X minutos.
+   contenedor de RabbitMQ en medio de la prueba, incluso contra el stack dockerizado completo.
 
 ### Reserva de stock en InventoryWorker (idempotencia y errores robustos)
 
-`OrderCreatedConsumer` (ver
-[`OrderCreatedConsumer.cs`](backend/src/InventoryWorker/Messaging/OrderCreatedConsumer.cs))
-implementa todo el ciclo de vida de un `OrderCreated`:
+`StockReservationService` (ver
+[`StockReservationService.cs`](backend/src/InventoryWorker/Services/StockReservationService.cs))
+contiene toda la lógica crítica, deliberadamente separada de `OrderCreatedConsumer` (que solo
+maneja la mecánica de RabbitMQ) para que sea testeable de forma directa — ver "Tests".
 
 **Idempotencia.** Cada orden procesada deja una fila en `stock_reservations`
 (`OrderId` con índice único), marcada con el comentario `atlas-checkpoint` en el código. Antes
@@ -106,9 +225,10 @@ Como defensa adicional ante una carrera entre dos entregas concurrentes del mism
 índice único de `OrderId` actúa de respaldo: si dos instancias pasan el chequeo anterior a la
 vez, solo una logra insertar su `StockReservation` — la otra recibe una violación de
 constraint (`23505`), hace rollback de su propio descuento y se retira sin duplicar nada.
-Probado publicando manualmente el mismo evento (mismo `OrderId`/`EventId`) dos veces contra la
-cola `order-created`: el stock bajó una sola vez y el segundo intento quedó registrado en el
-log como omitido por idempotencia.
+Probado dos veces: con un test automatizado (ver "Tests") y publicando manualmente el mismo
+evento (mismo `OrderId`/`EventId`) dos veces contra la cola `order-created` en el sistema real
+— el stock bajó una sola vez y el segundo intento quedó registrado en el log como omitido por
+idempotencia.
 
 **Reserva atómica (todo o nada).** Se revisa el stock de *todos* los items de la orden antes
 de descontar cualquiera; si algún SKU no existe o no tiene stock suficiente, no se descuenta
@@ -122,7 +242,10 @@ compartida por `OrderCreatedConsumer` y el `StockOutcomeConsumer` de OrdersApi):
   `IHostedService.StartAsync` (si lo hiciera, tumbaría todo el host). Se reintenta con backoff
   creciente (5s, 10s, 15s... hasta 30s) dentro del propio `BackgroundService`, sin afectar el
   resto de la app — `GET /api/stock` sigue respondiendo con normalidad mientras tanto.
-  Probado deteniendo el contenedor de RabbitMQ antes de arrancar InventoryWorker.
+  Probado deteniendo el contenedor de RabbitMQ antes de arrancar InventoryWorker, y
+  observado también "en salvaje" al levantar `docker compose up`: RabbitMQ reportó `healthy`
+  un instante antes de aceptar conexiones AMQP, y ambos consumers absorbieron ese margen con
+  su propio retry sin caerse.
 - *RabbitMQ cae después de conectar*: `AutomaticRecoveryEnabled` de RabbitMQ.Client reconecta
   y vuelve a declarar colas/consumers solo; se loguean las transiciones de
   desconexión/recuperación. Probado deteniendo y reiniciando el contenedor con el consumer ya
@@ -166,40 +289,105 @@ la tabla `stock` está vacía:
 
 Ver [`InventorySeeder`](backend/src/InventoryWorker/Seed/InventorySeeder.cs).
 
-### Levantar la infraestructura
+## Tests
 
 ```bash
-cp .env.example .env
-docker compose up -d
+dotnet test backend/OrderFlow.sln
 ```
 
-Esto levanta PostgreSQL (puerto 5432) y RabbitMQ (puerto 5672, UI de administración en
-http://localhost:15672).
+5 tests (xUnit) en [`backend/tests/OrderFlow.Tests`](backend/tests/OrderFlow.Tests), sobre la
+lógica crítica pedida — validaciones, transición de estados e idempotencia del consumidor —
+corriendo contra EF Core con SQLite en memoria (no un mock de `DbContext`: consultas, índices
+únicos y transacciones reales) y un publisher de RabbitMQ falso, sin necesitar Docker:
 
-### Correr las APIs
+| Archivo | Qué cubre |
+|---|---|
+| [`OrdersControllerTests.cs`](backend/tests/OrderFlow.Tests/OrdersApi/OrdersControllerTests.cs) | `Create_WithInvalidInput_ReturnsBadRequestWithExpectedError` (Theory: `clienteNombre` vacío, SKU inexistente, cantidad fuera de 1–100) y `Create_WithValidInput_PersistsOrderAsPendingAndPublishesEvent`. |
+| [`StockReservationServiceTests.cs`](backend/tests/OrderFlow.Tests/InventoryWorker/StockReservationServiceTests.cs) | `ReserveAsync_WithSufficientStock_DecrementsStockAndReturnsReserved`, `ReserveAsync_WithInsufficientStock_RejectsWithoutChangingStock`, y `ReserveAsync_CalledTwiceForSameOrderId_IsIdempotent` (la orden se "reentrega" con el mismo `OrderId`/`EventId` y se verifica que el stock se descuenta una sola vez). |
 
-```bash
-cd backend
-dotnet run --project src/OrdersApi
-dotnet run --project src/InventoryWorker
-```
+La lógica de idempotencia/reserva vive en `StockReservationService`, separada a propósito de
+`OrderCreatedConsumer` (que solo maneja RabbitMQ) — así el test la ejercita directamente en
+vez de tener que levantar un broker.
 
-Cada proyecto lee su cadena de conexión y credenciales del broker desde variables de
-entorno (`ConnectionStrings__Postgres`, `RabbitMq__HostName`, `RabbitMq__UserName`,
-`RabbitMq__Password`, etc.), con valores de conveniencia para desarrollo local en
-`appsettings.Development.json`. En producción/CI estas variables deben inyectarse desde el
-entorno (o `.env` + docker-compose) y nunca quedar hardcodeadas.
+## Docker
+
+Cada servicio de aplicación tiene un `Dockerfile` multi-stage (compilar con el SDK, correr con
+el runtime — la imagen final no lleva el SDK ni el código fuente):
+
+- [`backend/src/OrdersApi/Dockerfile`](backend/src/OrdersApi/Dockerfile) y
+  [`backend/src/InventoryWorker/Dockerfile`](backend/src/InventoryWorker/Dockerfile): SDK de
+  .NET 8 sobre Alpine para `dotnet publish`, runtime ASP.NET 8 sobre Alpine para ejecutar,
+  usuario no-root, capas de `dotnet restore` cacheadas por separado del código fuente.
+- [`frontend/Dockerfile`](frontend/Dockerfile): Node 20 Alpine para `npm run build`, nginx
+  Alpine para servir el resultado estático. Las URLs de las APIs se inyectan como build args
+  (ver trade-off arriba).
+
+`docker-compose.yml` en la raíz orquesta los 5 servicios con `depends_on: condition:
+service_healthy` sobre Postgres/RabbitMQ, así que `ordersapi`/`inventoryworker` nunca arrancan
+antes de que la infraestructura esté realmente lista — sin eso, sus migraciones fallarían al
+arrancar.
+
+## Variables de entorno
+
+Todas documentadas con valores de ejemplo en [`.env.example`](.env.example) (raíz, para
+`docker-compose`) y [`frontend/.env.example`](frontend/.env.example) (para `npm run dev`
+fuera de Docker). Nunca hay credenciales ni cadenas de conexión hardcodeadas en el código:
+
+| Variable | Usada por | Propósito |
+|---|---|---|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres, ordersapi, inventoryworker | Credenciales y nombre de la base. |
+| `RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS` | rabbitmq, ordersapi, inventoryworker | Credenciales del broker. |
+| `ConnectionStrings__Postgres` | ordersapi, inventoryworker | Cadena de conexión completa (compuesta en `docker-compose.yml` a partir de las de arriba). |
+| `RabbitMq__HostName/Port/UserName/Password/VirtualHost` | ordersapi, inventoryworker | Conexión al broker. |
+| `Cors__AllowedOrigins` | ordersapi, inventoryworker | Origen permitido para el frontend. |
+| `ORDERS_API_PORT` / `INVENTORY_API_PORT` / `FRONTEND_PORT` | docker-compose | Puertos publicados en el host. |
+| `VITE_ORDERS_API_URL` / `VITE_INVENTORY_API_URL` / `VITE_POLL_INTERVAL_MS` | frontend | URLs de las APIs y frecuencia de polling (incrustadas en el bundle al compilar). |
 
 ## Frontend
 
 SPA en React + TypeScript (Vite) con dos secciones: crear pedidos (validación en tiempo real
 + errores del servidor visibles en pantalla) y una tabla de pedidos recientes con polling
-automático del estado. Requiere que `OrdersApi` e `InventoryWorker` estén corriendo con CORS
-habilitado para su origen (`Cors:AllowedOrigins`, por defecto `http://localhost:5173`).
-Detalle completo en [`frontend/README.md`](frontend/README.md).
+automático del estado. Detalle completo en [`frontend/README.md`](frontend/README.md).
+
+Para correrlo fuera de Docker (con `OrdersApi`/`InventoryWorker` corriendo por separado):
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
+## Qué haría distinto con más tiempo
+
+- **Outbox transaccional real**, no la versión simplificada actual. Un worker en background
+  que escanee periódicamente `Orders`/`StockReservations` con la notificación pendiente
+  (`EventPublished`/`ResponseEventPublished` en `false`) y reintente publicarla con backoff
+  (ej. Polly), en vez de depender de la siguiente entrega del mismo mensaje para reintentar.
+- **Una base de datos por servicio de verdad**, con la validación de SKU en `OrdersApi` hecha
+  vía HTTP a `InventoryWorker` (con su propio timeout/circuit breaker) en vez de leer
+  directamente la tabla `stock` — la separación real que un sistema de microservicios en
+  producción debería tener, en vez del atajo documentado arriba.
+- **Configuración del frontend en tiempo de ejecución**, no de build: servir un
+  `env.js`/`config.json` desde nginx (o usar `envsubst` sobre un template al arrancar el
+  contenedor) para que la misma imagen de frontend sirva para varios entornos sin
+  reconstruirla.
+- **Trazabilidad end-to-end real**: ya existe `CorrelationId` en cada evento, pero falta
+  logging estructurado (ej. Serilog + Seq) y tracing distribuido (OpenTelemetry) que lo
+  aproveche para seguir un pedido a través de los tres saltos (OrdersApi → RabbitMQ →
+  InventoryWorker → RabbitMQ → OrdersApi) en una sola vista.
+- **Más cobertura de tests**: tests de integración con Testcontainers (Postgres + RabbitMQ
+  reales, no SQLite/fake) para los `BackgroundService` completos, y un smoke test end-to-end
+  del frontend (Playwright) corriendo en CI contra el stack dockerizado.
+- **CI/CD**: un pipeline (GitHub Actions) que corra `dotnet test`, el build del frontend, y
+  `docker compose build` en cada PR, y que publique las imágenes a un registry.
+- **Autenticación/autorización** — hoy no existe; cualquiera que alcance las APIs puede crear
+  pedidos o ver el catálogo completo.
+- **Healthchecks propios en las APIs de .NET** (`/health`) para que `docker-compose` (u
+  orquestadores más sofisticados) puedan verificar su salud real, no solo la de Postgres/RabbitMQ.
+- **Repensar la topología de despliegue para producción**: este `docker-compose` es correcto
+  para desarrollo local y para esta entrega, pero para producción evaluaría Kubernetes (con
+  autoscaling y rolling updates reales) o, si la organización ya invirtió en ello, desplegar
+  sobre infraestructura basada en hiperconvergencia (HCI) — cómputo, almacenamiento y
+  virtualización administrados como una sola capa (VMware vSAN, Nutanix, Azure Stack HCI) — en vez de
+  contenedores sueltos en un único host, para tener alta disponibilidad real de Postgres/RabbitMQ
+  en vez de un solo contenedor de cada uno.

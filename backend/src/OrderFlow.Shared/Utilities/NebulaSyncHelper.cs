@@ -20,14 +20,23 @@ public static class NebulaSyncHelper
 
     /// <summary>
     /// Wraps an outgoing event with a normalized "ocurrido en" (occurred at) UTC timestamp
-    /// and, if not already set, a new correlation id used to trace the event across the
-    /// OrdersApi -> RabbitMQ -> InventoryWorker hop in logs.
+    /// and, if not already set: a new <see cref="IEventEnvelope.EventId"/> identifying this
+    /// message instance (used by consumers for idempotency), and a new
+    /// <see cref="IEventEnvelope.CorrelationId"/> identifying the business operation, so it
+    /// can be traced across every hop (e.g. OrderCreated -> StockReserved/StockRejected).
+    /// Callers that need to propagate an existing correlation id (e.g. InventoryWorker
+    /// replying to the order that triggered it) should set it before calling this method.
     /// </summary>
-    public static OrderCreatedEvent StampEnvelope(OrderCreatedEvent orderEvent)
+    public static TEvent StampEnvelope<TEvent>(TEvent orderEvent) where TEvent : IEventEnvelope
     {
         ArgumentNullException.ThrowIfNull(orderEvent);
 
         orderEvent.OcurridoEn = DateTime.UtcNow;
+
+        if (orderEvent.EventId == Guid.Empty)
+        {
+            orderEvent.EventId = Guid.NewGuid();
+        }
 
         if (orderEvent.CorrelationId == Guid.Empty)
         {

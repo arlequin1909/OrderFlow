@@ -11,11 +11,15 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("Falta la cadena de conexión 'ConnectionStrings:Postgres'.");
 
-builder.Services.AddDbContext<InventoryDbContext>(options => options.UseNpgsql(connectionString));
+// See OrdersApi/Program.cs for why each service uses its own migrations history table name
+// despite sharing one physical Postgres instance in this docker-compose setup.
+builder.Services.AddDbContext<InventoryDbContext>(options =>
+    options.UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory_inventory")));
 
 // RabbitMq:* is populated from RabbitMq__HostName, RabbitMq__UserName, RabbitMq__Password, etc.
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 
+builder.Services.AddSingleton<IStockOutcomePublisher, InventoryEventPublisher>();
 builder.Services.AddHostedService<OrderCreatedConsumer>();
 
 builder.Services.AddControllers();

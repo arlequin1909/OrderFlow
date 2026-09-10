@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
@@ -6,7 +5,6 @@ using OrderFlow.Shared.Contracts;
 using OrderFlow.Shared.Messaging;
 using OrderFlow.Shared.Utilities;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Exceptions;
 
 namespace OrdersApi.Messaging;
 
@@ -95,7 +93,7 @@ public sealed class RabbitMqPublisher : IOrderEventPublisher, IDisposable
             error = null;
             return true;
         }
-        catch (Exception ex) when (ex is BrokerUnreachableException or SocketException or AlreadyClosedException or TimeoutException or OperationInterruptedException)
+        catch (Exception ex) when (RabbitMqTransientErrors.IsTransient(ex))
         {
             _logger.LogError(
                 ex,

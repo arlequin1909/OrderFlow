@@ -10,7 +10,12 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("Falta la cadena de conexión 'ConnectionStrings:Postgres'.");
 
-builder.Services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(connectionString));
+// OrdersApi and InventoryWorker share one physical Postgres instance in this docker-compose
+// setup. EF Core's migrations history table is NOT namespaced per DbContext by default, so
+// both services' startup migrations would race to create the same "__EFMigrationsHistory"
+// table. Giving each service its own history table name avoids that race entirely.
+builder.Services.AddDbContext<OrdersDbContext>(options =>
+    options.UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory_orders")));
 
 // Read-only catalog lookup (SKU existence check) — see CatalogDbContext for the trade-off
 // of sharing the "stock" table instead of calling InventoryWorker over HTTP.
@@ -19,6 +24,7 @@ builder.Services.AddDbContext<CatalogDbContext>(options => options.UseNpgsql(con
 // RabbitMq:* is populated from RabbitMq__HostName, RabbitMq__UserName, RabbitMq__Password, etc.
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 builder.Services.AddSingleton<IOrderEventPublisher, RabbitMqPublisher>();
+builder.Services.AddHostedService<StockOutcomeConsumer>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {

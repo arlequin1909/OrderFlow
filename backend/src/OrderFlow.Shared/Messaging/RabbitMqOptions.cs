@@ -21,4 +21,10 @@ public sealed class RabbitMqOptions
 
     /// <summary>Queue used to publish/consume order-created events.</summary>
     public string OrderCreatedQueue { get; set; } = "order-created";
+
+    /// <summary>Queue InventoryWorker publishes to (and OrdersApi consumes) when stock was reserved.</summary>
+    public string StockReservedQueue { get; set; } = "stock-reserved";
+
+    /// <summary>Queue InventoryWorker publishes to (and OrdersApi consumes) when stock could not be reserved.</summary>
+    public string StockRejectedQueue { get; set; } = "stock-rejected";
 }

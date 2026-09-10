@@ -2,10 +2,14 @@ namespace OrdersApi.Models;
 
 public enum OrderStatus
 {
+    /// <summary>Persisted, OrderCreated published (or pending retry) — awaiting InventoryWorker's stock outcome.</summary>
     Pending,
-    Processing,
-    Completed,
-    Cancelled,
+
+    /// <summary>InventoryWorker reserved stock for every item (StockReserved received).</summary>
+    Confirmed,
+
+    /// <summary>InventoryWorker could not reserve stock for at least one item (StockRejected received).</summary>
+    Rejected,
 }
 
 public class Order
@@ -24,6 +28,9 @@ public class Order
     public bool EventPublished { get; set; }
 
     public string? EventPublishError { get; set; }
+
+    /// <summary>Reason InventoryWorker gave for a Rejected order (null unless Status == Rejected).</summary>
+    public string? RejectionReason { get; set; }
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 

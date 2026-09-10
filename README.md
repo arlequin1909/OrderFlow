@@ -4,7 +4,7 @@ Monorepo de la prueba técnica de tienda en línea.
 
 ```
 backend/    Solución .NET 8 (OrdersApi, InventoryWorker, OrderFlow.Shared)
-frontend/   Aplicación cliente (pendiente de scaffold)
+frontend/   SPA React + TypeScript (Vite) — crear pedidos y verlos con su estado en vivo
 docker-compose.yml   Infra local: PostgreSQL + RabbitMQ
 .env.example          Variables de entorno de referencia
 ```
@@ -192,4 +192,14 @@ entorno (o `.env` + docker-compose) y nunca quedar hardcodeadas.
 
 ## Frontend
 
-Pendiente de scaffold — ver [`frontend/README.md`](frontend/README.md).
+SPA en React + TypeScript (Vite) con dos secciones: crear pedidos (validación en tiempo real
++ errores del servidor visibles en pantalla) y una tabla de pedidos recientes con polling
+automático del estado. Requiere que `OrdersApi` e `InventoryWorker` estén corriendo con CORS
+habilitado para su origen (`Cors:AllowedOrigins`, por defecto `http://localhost:5173`).
+Detalle completo en [`frontend/README.md`](frontend/README.md).
+
+```bash
+cd frontend
+npm install
+npm run dev
+```

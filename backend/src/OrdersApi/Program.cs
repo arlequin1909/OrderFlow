@@ -34,6 +34,15 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Allowed origins for the frontend/ SPA — comma-separated, overridable via the environment
+// variable Cors__AllowedOrigins. Defaults to the Vite dev server's default port.
+var allowedOrigins = (builder.Configuration["Cors:AllowedOrigins"] ?? "http://localhost:5173")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy => policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod());
+});
+
 var app = builder.Build();
 
 // Apply pending migrations for the Orders schema on startup.
@@ -49,6 +58,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors("Frontend");
 app.UseAuthorization();
 app.MapControllers();
 

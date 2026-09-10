@@ -12,11 +12,19 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 
 builder.Services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(connectionString));
 
+// Read-only catalog lookup (SKU existence check) — see CatalogDbContext for the trade-off
+// of sharing the "stock" table instead of calling InventoryWorker over HTTP.
+builder.Services.AddDbContext<CatalogDbContext>(options => options.UseNpgsql(connectionString));
+
 // RabbitMq:* is populated from RabbitMq__HostName, RabbitMq__UserName, RabbitMq__Password, etc.
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 builder.Services.AddSingleton<IOrderEventPublisher, RabbitMqPublisher>();
 
-builder.Services.AddControllers();
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    // Serialize enums (e.g. Order.Status) as their string name instead of a numeric index.
+    options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

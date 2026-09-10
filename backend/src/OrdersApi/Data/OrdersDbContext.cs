@@ -17,6 +17,8 @@ public class OrdersDbContext : DbContext
         modelBuilder.Entity<Order>(entity =>
         {
             entity.ToTable("orders");
+            entity.Property(o => o.ClienteNombre).IsRequired();
+            entity.Property(o => o.Status).HasConversion<string>().HasMaxLength(20).IsRequired();
             entity.HasMany(o => o.Items)
                 .WithOne()
                 .HasForeignKey(i => i.OrderId)

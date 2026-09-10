@@ -1,0 +1,45 @@
+# Infra para desarrollo local: PostgreSQL + RabbitMQ.
+# OrdersApi e InventoryWorker se ejecutan con `dotnet run` (o su propio contenedor si se
+# añade más adelante) apuntando a estos servicios mediante las variables de entorno
+# ConnectionStrings__Postgres y RabbitMq__*, definidas en .env (ver .env.example).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orderflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orderflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orderflow}
+      POSTGRES_DB: ${POSTGRES_DB:-orderflow}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - orderflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orderflow} -d ${POSTGRES_DB:-orderflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: orderflow-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-orderflow}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-orderflow}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672" # UI: http://localhost:15672
+    volumes:
+      - orderflow_rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  orderflow_postgres_data:
+  orderflow_rabbitmq_data:

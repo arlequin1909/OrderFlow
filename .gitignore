@@ -1,0 +1,18 @@
+# .NET
+backend/**/bin/
+backend/**/obj/
+*.user
+
+# Env files with real secrets
+.env
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store

@@ -1,17 +1,18 @@
 using Microsoft.EntityFrameworkCore;
+using OrdersApi.Models;
 
 namespace OrdersApi.Data;
 
 /// <summary>
-/// Read-only projection of the "stock" table owned by InventoryWorker, used exclusively to
-/// validate that a SKU exists in the catalog when creating an order.
+/// Read-only projection of the "stock" table owned by InventoryWorker, used for SKU
+/// existence validation and for the read-only GET /api/catalog endpoint the frontend uses to
+/// populate its SKU picker.
 ///
-/// Trade-off: this reads InventoryWorker's table directly instead of calling its HTTP API
-/// (GET /api/stock/{sku}), because both services already share the same Postgres instance in
-/// this docker-compose setup and a synchronous cross-service HTTP call would add another
-/// runtime dependency (and failure mode) to order creation for little benefit at this stage.
-/// In a stricter microservices setup with separate databases per service, this should become
-/// an HTTP call to InventoryWorker (with its own timeout/circuit-breaker handling).
+/// Trade-off: this reads InventoryWorker's table directly instead of calling an HTTP API,
+/// because both services already share the same Postgres instance in this docker-compose
+/// setup, and InventoryWorker itself exposes no HTTP surface at all (it is a pure background
+/// service — see README "Architecture decisions"). In a stricter microservices setup with
+/// separate databases per service, this would need its own replicated read model instead.
 ///
 /// This context never runs migrations and never writes — InventoryWorker remains the sole
 /// owner of the table's schema and data.
@@ -33,12 +34,4 @@ public class CatalogDbContext : DbContext
             entity.Property(p => p.Sku).IsRequired();
         });
     }
-}
-
-/// <summary>Minimal read-only view of InventoryWorker's Product/stock row.</summary>
-public class CatalogProduct
-{
-    public int Id { get; set; }
-
-    public string Sku { get; set; } = string.Empty;
 }

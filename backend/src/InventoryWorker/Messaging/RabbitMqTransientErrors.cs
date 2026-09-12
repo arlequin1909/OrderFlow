@@ -1,12 +1,11 @@
 using System.Net.Sockets;
 using RabbitMQ.Client.Exceptions;
 
-namespace OrderFlow.Shared.Messaging;
+namespace InventoryWorker.Messaging;
 
 /// <summary>
-/// Classifies exceptions that indicate a RabbitMQ connectivity problem (broker down,
-/// network blip, connection/channel closed) as opposed to a programming or data error.
-/// Shared by every publisher/consumer so "is this broker down?" is answered consistently.
+/// Classifies exceptions that indicate a RabbitMQ connectivity problem (broker down, network
+/// blip, connection/channel closed) as opposed to a programming or data error.
 /// </summary>
 public static class RabbitMqTransientErrors
 {

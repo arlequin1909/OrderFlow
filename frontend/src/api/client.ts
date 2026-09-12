@@ -1,9 +1,9 @@
 import { ApiValidationError, type CreateOrderRequest, type Order, type Product } from "./types";
 
-// Base URLs for each backend service, overridable via .env (see .env.example).
-// Defaults match the ports used when running both APIs locally with `dotnet run`.
+// Base URL for OrdersApi, overridable via .env (see .env.example). Defaults to the port used
+// when running it locally with `dotnet run`. InventoryWorker has no HTTP surface of its own
+// (it's a pure background service) — the product catalog is served by OrdersApi instead.
 const ORDERS_API_URL = import.meta.env.VITE_ORDERS_API_URL ?? "http://localhost:5081";
-const INVENTORY_API_URL = import.meta.env.VITE_INVENTORY_API_URL ?? "http://localhost:5080";
 
 async function parseJsonSafely(response: Response): Promise<unknown> {
   const text = await response.text();
@@ -17,6 +17,28 @@ async function parseJsonSafely(response: Response): Promise<unknown> {
 
 /** Generic "the request failed and it wasn't a 400 validation error" case (network down, 500, etc.). */
 export class ApiError extends Error {}
+
+/**
+ * The backend returns validation failures as a standard RFC 7807 ValidationProblemDetails:
+ * `{ type, title, status, errors: { fieldName: string[] } }`. This flattens every field's
+ * messages into a single list for display — the exact field key doesn't matter to the user.
+ */
+function extractValidationErrors(body: unknown): string[] {
+  if (
+    body &&
+    typeof body === "object" &&
+    "errors" in body &&
+    body.errors &&
+    typeof body.errors === "object"
+  ) {
+    const messages = Object.values(body.errors as Record<string, unknown>)
+      .flatMap((value) => (Array.isArray(value) ? value : [value]))
+      .map(String);
+    if (messages.length > 0) return messages;
+  }
+
+  return ["Solicitud inválida."];
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -33,11 +55,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 400) {
     const body = await parseJsonSafely(response);
-    const errors =
-      body && typeof body === "object" && "errors" in body && Array.isArray((body as { errors: unknown }).errors)
-        ? ((body as { errors: unknown[] }).errors.map(String))
-        : ["Solicitud inválida."];
-    throw new ApiValidationError(errors);
+    throw new ApiValidationError(extractValidationErrors(body));
   }
 
   if (!response.ok) {
@@ -59,6 +77,6 @@ export function createOrder(payload: CreateOrderRequest): Promise<Order> {
   });
 }
 
-export function getStock(): Promise<Product[]> {
-  return request<Product[]>(`${INVENTORY_API_URL}/api/stock`);
+export function getCatalog(): Promise<Product[]> {
+  return request<Product[]>(`${ORDERS_API_URL}/api/catalog`);
 }

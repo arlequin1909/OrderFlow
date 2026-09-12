@@ -1,41 +1,22 @@
+using InventoryWorker.Contracts;
 using InventoryWorker.Data;
 using InventoryWorker.Models;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
-using OrderFlow.Shared.Contracts;
 
 namespace InventoryWorker.Services;
 
-public sealed class StockReservationOutcomeResult
-{
-    public required StockReservation Reservation { get; init; }
-
-    /// <summary>
-    /// True when this call did NOT touch stock because the order (by OrderId) already had a
-    /// reservation from a previous delivery — the idempotency guard kicked in. In that case
-    /// only the outcome notification may still need to be (re)published.
-    /// </summary>
-    public required bool WasAlreadyProcessed { get; init; }
-}
-
-/// <summary>
-/// Core, RabbitMQ-agnostic business logic for turning an <see cref="OrderCreatedEvent"/> into
-/// a stock outcome: idempotency, the all-or-nothing stock check/decrement, and persisting the
-/// result. Extracted out of <c>OrderCreatedConsumer</c> (which only handles the RabbitMQ
-/// plumbing around it) so this — the actual critical logic — can be unit tested directly
-/// against an in-memory database, with no broker involved. See
-/// OrderFlow.Tests/InventoryWorker/StockReservationServiceTests.cs.
-/// </summary>
-public class StockReservationService
+/// <inheritdoc cref="IStockReservationService" />
+public class StockReservationService : IStockReservationService
 {
     public async Task<StockReservationOutcomeResult> ReserveAsync(
         InventoryDbContext dbContext,
         OrderCreatedEvent orderEvent,
         CancellationToken cancellationToken = default)
     {
-        // atlas-checkpoint: guarda de idempotencia. Si esta orden (OrderId) ya tiene una
-        // StockReservation registrada, el stock NUNCA se vuelve a tocar — sin importar
-        // cuántas veces se reentregue este mismo evento (o uno con el mismo OrderId).
+        // Idempotency guard. If this order (OrderId) already has a StockReservation recorded,
+        // stock is NEVER touched again — no matter how many times this same event (or one with
+        // the same OrderId) is redelivered.
         var existing = await dbContext.StockReservations
             .FirstOrDefaultAsync(r => r.OrderId == orderEvent.OrderId, cancellationToken);
 
@@ -83,6 +64,11 @@ public class StockReservationService
     /// All-or-nothing: checks every item has enough stock before decrementing any of them.
     /// Returns null (and decrements the tracked <see cref="Product"/> entities) if the whole
     /// order can be reserved, or the rejection reason otherwise (nothing is decremented).
+    ///
+    /// The rejection reason is user-facing — it travels in StockRejectedEvent.Reason all the
+    /// way to Order.RejectionReason, which the (Spanish-language) frontend displays verbatim
+    /// in the orders table — so, like the FluentValidation messages in OrdersApi, it stays in
+    /// Spanish rather than following the English convention used for comments/logs/exceptions.
     /// </summary>
     private static async Task<string?> TryReserveStockAsync(InventoryDbContext dbContext, OrderCreatedEvent orderEvent, CancellationToken cancellationToken)
     {

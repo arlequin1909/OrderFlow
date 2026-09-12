@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiError, createOrder, getStock } from "../api/client";
+import { ApiError, createOrder, getCatalog } from "../api/client";
 import { ApiValidationError, type Product } from "../api/types";
 import { ErrorAlert } from "./ErrorAlert";
 
@@ -63,7 +63,7 @@ export function CreateOrderForm({ onOrderCreated }: { onOrderCreated: () => void
   // react/set-state-in-effect rule flags). The "Reintentar" button below is the one place
   // that resets state before calling this again, in response to a real click event.
   const fetchCatalog = () => {
-    getStock()
+    getCatalog()
       .then((data) => setProducts(data))
       .catch((error) => {
         const message =

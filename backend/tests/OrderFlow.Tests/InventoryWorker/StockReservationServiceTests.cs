@@ -1,9 +1,9 @@
+using InventoryWorker.Contracts;
 using InventoryWorker.Data;
 using InventoryWorker.Models;
 using InventoryWorker.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using OrderFlow.Shared.Contracts;
 
 namespace OrderFlow.Tests.InventoryWorker;
 
@@ -73,7 +73,7 @@ public class StockReservationServiceTests
     }
 
     /// <summary>
-    /// The critical idempotency guarantee (atlas-checkpoint): reprocessing the same OrderId
+    /// The critical idempotency guarantee: reprocessing the same OrderId
     /// (e.g. a RabbitMQ redelivery) must never decrement stock a second time.
     /// </summary>
     [Fact]

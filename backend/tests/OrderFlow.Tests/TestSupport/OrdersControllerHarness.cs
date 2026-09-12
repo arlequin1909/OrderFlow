@@ -3,13 +3,18 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrdersApi.Controllers;
 using OrdersApi.Data;
+using OrdersApi.Models;
+using OrdersApi.Services;
+using OrdersApi.Validators;
 
 namespace OrderFlow.Tests.TestSupport;
 
 /// <summary>
-/// Builds an <see cref="OrdersController"/> wired to real EF Core DbContexts backed by
-/// SQLite in-memory databases (not mocked DbContexts) — real query/constraint behavior,
-/// no Postgres required — plus a <see cref="FakeOrderEventPublisher"/> instead of RabbitMQ.
+/// Builds an <see cref="OrdersController"/> wired to the real service/validator graph
+/// (<see cref="OrderService"/>, <see cref="CatalogService"/>,
+/// <see cref="CreateOrderRequestValidator"/>) backed by SQLite in-memory databases (not
+/// mocked DbContexts) — real query/constraint behavior, no Postgres required — plus a
+/// <see cref="FakeOrderEventPublisher"/> instead of RabbitMQ.
 /// </summary>
 public sealed class OrdersControllerHarness : IAsyncDisposable
 {
@@ -36,7 +41,11 @@ public sealed class OrdersControllerHarness : IAsyncDisposable
         CatalogDb = new CatalogDbContext(new DbContextOptionsBuilder<CatalogDbContext>().UseSqlite(_catalogConnection).Options);
         CatalogDb.Database.EnsureCreated();
 
-        Controller = new OrdersController(OrdersDb, CatalogDb, Publisher, NullLogger<OrdersController>.Instance);
+        var orderService = new OrderService(OrdersDb, Publisher, NullLogger<OrderService>.Instance);
+        var catalogService = new CatalogService(CatalogDb);
+        var validator = new CreateOrderRequestValidator(catalogService);
+
+        Controller = new OrdersController(orderService, validator);
     }
 
     /// <summary>Seeds a SKU into the (otherwise InventoryWorker-owned) catalog so it passes existence validation.</summary>

@@ -5,11 +5,14 @@ using Microsoft.EntityFrameworkCore;
 namespace InventoryWorker.Seed;
 
 /// <summary>
-/// Applies pending migrations and loads the initial stock catalog on startup, so the API
-/// is usable immediately after `docker-compose up` without any manual seeding step.
+/// Applies pending migrations and loads the initial stock catalog on startup, so the system
+/// is usable immediately after `docker compose up` without any manual seeding step.
 /// </summary>
 public static class InventorySeeder
 {
+    // Product.Name is user-facing (rendered as-is in the frontend's Spanish-language SKU
+    // picker), so it stays in Spanish like the rest of that UI — unlike code comments, log
+    // messages and exceptions, which are in English throughout this codebase.
     private static readonly Product[] InitialProducts =
     {
         new() { Sku = "ABC-01", Name = "Producto ABC-01", StockAvailable = 100 },
@@ -31,7 +34,7 @@ public static class InventorySeeder
 
             product.UpdatedAtUtc = DateTime.UtcNow;
             dbContext.Products.Add(product);
-            logger.LogInformation("Seeding stock inicial para SKU {Sku} con {Stock} unidades", product.Sku, product.StockAvailable);
+            logger.LogInformation("Seeding initial stock for SKU {Sku}: {Stock} units", product.Sku, product.StockAvailable);
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);

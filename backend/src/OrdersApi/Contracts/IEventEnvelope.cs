@@ -1,14 +1,13 @@
-namespace OrderFlow.Shared.Contracts;
+namespace OrdersApi.Contracts;
 
 /// <summary>
 /// Common envelope fields every event on the bus carries, stamped by
 /// <see cref="Utilities.NebulaSyncHelper.StampEnvelope{TEvent}"/> before publishing:
 ///   - <see cref="EventId"/>: identity of this specific message instance, used by consumers
-///     for idempotency (has this exact message already been processed?).
+///     for idempotency.
 ///   - <see cref="CorrelationId"/>: identity of the business operation the message belongs
-///     to, propagated across hops (e.g. OrderCreated -> StockReserved/StockRejected) so the
-///     whole chain can be traced together even though each hop has its own EventId.
-///   - <see cref="OcurridoEn"/>: normalized UTC timestamp of when the envelope was built.
+///     to, propagated across hops so the whole chain can be traced together.
+///   - <see cref="OccurredAt"/>: normalized UTC timestamp of when the envelope was built.
 /// </summary>
 public interface IEventEnvelope
 {
@@ -16,5 +15,5 @@ public interface IEventEnvelope
 
     Guid CorrelationId { get; set; }
 
-    DateTime OcurridoEn { get; set; }
+    DateTime OccurredAt { get; set; }
 }

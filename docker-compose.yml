@@ -73,16 +73,19 @@ services:
     container_name: orderflow-inventoryworker
     restart: unless-stopped
     environment:
-      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      # InventoryWorker is a plain generic host (Host.CreateApplicationBuilder), not
+      # WebApplication — it reads DOTNET_ENVIRONMENT, not ASPNETCORE_ENVIRONMENT (that one is
+      # ASP.NET Core-hosting-specific and would silently have no effect here).
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-orderflow};Username=${POSTGRES_USER:-orderflow};Password=${POSTGRES_PASSWORD:-orderflow}"
       RabbitMq__HostName: rabbitmq
       RabbitMq__Port: "5672"
       RabbitMq__UserName: ${RABBITMQ_DEFAULT_USER:-orderflow}
       RabbitMq__Password: ${RABBITMQ_DEFAULT_PASS:-orderflow}
       RabbitMq__VirtualHost: /
-      Cors__AllowedOrigins: "http://localhost:${FRONTEND_PORT:-5173}"
-    ports:
-      - "${INVENTORY_API_PORT:-5080}:8080"
+    # No `ports:` — InventoryWorker exposes no HTTP surface at all (pure background service,
+    # communicates only through RabbitMQ/Postgres). Nothing outside this compose network ever
+    # needs to reach it directly.
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,12 +97,11 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Baked into the static JS bundle at build time — must be the URLs the BROWSER (on
-        # the host) can reach, i.e. the published host ports below, never the internal
-        # Docker service names ("ordersapi"/"inventoryworker" only resolve inside the
-        # compose network, not from the host machine's browser).
+        # Baked into the static JS bundle at build time — must be the URL the BROWSER (on the
+        # host) can reach, i.e. the published host port below, never the internal Docker
+        # service name ("ordersapi" only resolves inside the compose network, not from the
+        # host machine's browser). InventoryWorker needs no such URL: it has no HTTP surface.
         VITE_ORDERS_API_URL: "http://localhost:${ORDERS_API_PORT:-5081}"
-        VITE_INVENTORY_API_URL: "http://localhost:${INVENTORY_API_PORT:-5080}"
         VITE_POLL_INTERVAL_MS: "${VITE_POLL_INTERVAL_MS:-4000}"
     container_name: orderflow-frontend
     restart: unless-stopped

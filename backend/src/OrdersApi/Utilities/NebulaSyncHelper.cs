@@ -1,37 +1,33 @@
 using System.Text.RegularExpressions;
-using OrderFlow.Shared.Contracts;
+using OrdersApi.Contracts;
 
-namespace OrderFlow.Shared.Utilities;
+namespace OrdersApi.Utilities;
 
 /// <summary>
-/// Cross-cutting utility shared by OrdersApi and InventoryWorker to keep asynchronous
-/// messaging consistent and traceable:
+/// Cross-cutting utility for asynchronous messaging consistency and traceability between
+/// OrdersApi and InventoryWorker:
 ///   - Stamps outgoing event envelopes with a normalized UTC timestamp and a correlation id.
-///   - Validates the payload shape (SKU format, quantities, required fields) on both the
-///     publishing side (OrdersApi) and the consuming side (InventoryWorker) before an event
-///     is trusted, so a malformed message never gets silently applied to stock.
+///   - Validates the payload shape (SKU format, quantities, required fields) before an event
+///     is trusted, so a malformed message never gets silently published or applied.
 ///
-/// It does not perform any I/O or call out to external services — it is a pure, in-process
-/// helper for event envelope metadata and schema validation.
+/// InventoryWorker keeps an identical copy in its own project — the two services no longer
+/// share a common library (see README "Architecture decisions"), so this class must be kept
+/// in sync by hand across both. It performs no I/O — a pure, in-process helper.
 /// </summary>
 public static class NebulaSyncHelper
 {
     private static readonly Regex SkuPattern = new(@"^[A-Z]{3}-\d{2}$", RegexOptions.Compiled);
 
     /// <summary>
-    /// Wraps an outgoing event with a normalized "ocurrido en" (occurred at) UTC timestamp
-    /// and, if not already set: a new <see cref="IEventEnvelope.EventId"/> identifying this
-    /// message instance (used by consumers for idempotency), and a new
-    /// <see cref="IEventEnvelope.CorrelationId"/> identifying the business operation, so it
-    /// can be traced across every hop (e.g. OrderCreated -> StockReserved/StockRejected).
-    /// Callers that need to propagate an existing correlation id (e.g. InventoryWorker
-    /// replying to the order that triggered it) should set it before calling this method.
+    /// Wraps an outgoing event with a normalized UTC timestamp and, if not already set, a new
+    /// <see cref="IEventEnvelope.EventId"/> (used by consumers for idempotency) and a new
+    /// <see cref="IEventEnvelope.CorrelationId"/> (traced across every hop).
     /// </summary>
     public static TEvent StampEnvelope<TEvent>(TEvent orderEvent) where TEvent : IEventEnvelope
     {
         ArgumentNullException.ThrowIfNull(orderEvent);
 
-        orderEvent.OcurridoEn = DateTime.UtcNow;
+        orderEvent.OccurredAt = DateTime.UtcNow;
 
         if (orderEvent.EventId == Guid.Empty)
         {
@@ -48,26 +44,26 @@ public static class NebulaSyncHelper
 
     /// <summary>
     /// Validates that an <see cref="OrderCreatedEvent"/> matches the schema both services
-    /// agree on: a non-empty order id, at least one line item, SKUs following the
-    /// "ABC-01" convention, and strictly positive quantities.
+    /// agree on: a non-empty order id, at least one line item, SKUs following the "ABC-01"
+    /// convention, and strictly positive quantities.
     /// </summary>
     public static bool TryValidateSchema(OrderCreatedEvent orderEvent, out string? error)
     {
         if (orderEvent is null)
         {
-            error = "El evento no puede ser nulo.";
+            error = "The event cannot be null.";
             return false;
         }
 
         if (orderEvent.OrderId == Guid.Empty)
         {
-            error = "OrderId es requerido.";
+            error = "OrderId is required.";
             return false;
         }
 
         if (orderEvent.Items is null || orderEvent.Items.Count == 0)
         {
-            error = "El evento debe contener al menos un item.";
+            error = "The event must contain at least one item.";
             return false;
         }
 
@@ -75,13 +71,13 @@ public static class NebulaSyncHelper
         {
             if (string.IsNullOrWhiteSpace(item.Sku) || !SkuPattern.IsMatch(item.Sku))
             {
-                error = $"SKU inválido: '{item.Sku}'. Formato esperado: 'ABC-01'.";
+                error = $"Invalid SKU: '{item.Sku}'. Expected format: 'ABC-01'.";
                 return false;
             }
 
             if (item.Quantity <= 0)
             {
-                error = $"La cantidad para el SKU '{item.Sku}' debe ser mayor a 0.";
+                error = $"Quantity for SKU '{item.Sku}' must be greater than 0.";
                 return false;
             }
         }

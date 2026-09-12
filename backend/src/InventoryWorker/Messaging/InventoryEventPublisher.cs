@@ -1,28 +1,19 @@
 using System.Text;
 using System.Text.Json;
+using InventoryWorker.Contracts;
+using InventoryWorker.Utilities;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OrderFlow.Shared.Contracts;
-using OrderFlow.Shared.Messaging;
-using OrderFlow.Shared.Utilities;
 using RabbitMQ.Client;
 
 namespace InventoryWorker.Messaging;
 
-public interface IStockOutcomePublisher
-{
-    /// <summary>Never throws for broker-availability problems — returns false with <paramref name="error"/> set instead.</summary>
-    bool TryPublishStockReserved(StockReservedEvent stockEvent, out string? error);
-
-    /// <summary>Never throws for broker-availability problems — returns false with <paramref name="error"/> set instead.</summary>
-    bool TryPublishStockRejected(StockRejectedEvent stockEvent, out string? error);
-}
-
 /// <summary>
-/// Publishes stock outcome events to RabbitMQ. Same failure-handling policy as
-/// OrdersApi's RabbitMqPublisher (see its doc comment and README "Manejo de fallos del
-/// broker"): lazy connection, automatic recovery, and every publish failure is caught and
-/// turned into a `false` return instead of an exception, so a broker outage never blocks a
-/// stock reservation that has already been durably recorded.
+/// Publishes stock outcome events to RabbitMQ. Same failure-handling policy as OrdersApi's
+/// RabbitMqPublisher (see its doc comment and README "Broker failure handling"): lazy
+/// connection, automatic recovery, and every publish failure is caught and turned into a
+/// `false` return instead of an exception, so a broker outage never blocks a stock
+/// reservation that has already been durably recorded.
 /// </summary>
 public sealed class InventoryEventPublisher : IStockOutcomePublisher, IDisposable
 {
@@ -76,15 +67,15 @@ public sealed class InventoryEventPublisher : IStockOutcomePublisher, IDisposabl
             _channel.BasicPublish(exchange: string.Empty, routingKey: queueName, basicProperties: properties, body: body);
 
             _logger.LogInformation(
-                "Evento {EventType} publicado en '{Queue}' (correlationId {CorrelationId})",
+                "{EventType} event published to '{Queue}' (correlationId {CorrelationId})",
                 typeof(TEvent).Name, queueName, stockEvent.CorrelationId);
             error = null;
             return true;
         }
         catch (Exception ex) when (RabbitMqTransientErrors.IsTransient(ex))
         {
-            _logger.LogError(ex, "No se pudo publicar {EventType} en '{Queue}': RabbitMQ no disponible", typeof(TEvent).Name, queueName);
-            error = "El broker de mensajería (RabbitMQ) no está disponible.";
+            _logger.LogError(ex, "Could not publish {EventType} to '{Queue}': RabbitMQ is unavailable", typeof(TEvent).Name, queueName);
+            error = "The messaging broker (RabbitMQ) is unavailable.";
             return false;
         }
     }

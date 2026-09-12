@@ -1,15 +1,16 @@
 using Microsoft.AspNetCore.Mvc;
 using OrderFlow.Tests.TestSupport;
-using OrdersApi.Controllers;
 using OrdersApi.Models;
+using OrdersApi.Requests;
 
 namespace OrderFlow.Tests.OrdersApi;
 
 public class OrdersControllerTests
 {
     /// <summary>
-    /// Covers the three validation rules POST /api/orders must enforce (400 Bad Request):
-    /// clienteNombre no vacío, sku existente en el catálogo, y cantidad entre 1 y 100.
+    /// Covers the three validation rules POST /api/orders must enforce (400 Bad Request via
+    /// FluentValidation, surfaced as a standard ValidationProblemDetails): clienteNombre no
+    /// vacío, sku existente en el catálogo, y cantidad entre 1 y 100.
     /// </summary>
     [Theory]
     [InlineData("", "ABC-01", 5, true, "clienteNombre")]
@@ -25,14 +26,11 @@ public class OrdersControllerTests
             harness.SeedCatalogSku(sku);
         }
 
-        var request = new OrdersController.CreateOrderRequest(
-            clienteNombre,
-            new List<OrdersController.CreateOrderItemRequest> { new(sku, quantity) });
+        var request = new CreateOrderRequest(clienteNombre, new List<CreateOrderItemRequest> { new(sku, quantity) });
 
         var result = await harness.Controller.Create(request, CancellationToken.None);
 
-        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
-        var errors = GetErrors(badRequest.Value);
+        var errors = GetErrors(result);
         Assert.Contains(errors, e => e.Contains(expectedErrorSubstring, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -42,9 +40,7 @@ public class OrdersControllerTests
         await using var harness = new OrdersControllerHarness();
         harness.SeedCatalogSku("ABC-01");
 
-        var request = new OrdersController.CreateOrderRequest(
-            "Ana Torres",
-            new List<OrdersController.CreateOrderItemRequest> { new("ABC-01", 3) });
+        var request = new CreateOrderRequest("Ana Torres", new List<CreateOrderItemRequest> { new("ABC-01", 3) });
 
         var result = await harness.Controller.Create(request, CancellationToken.None);
 
@@ -64,12 +60,10 @@ public class OrdersControllerTests
         Assert.Equal(OrderStatus.Pending, stored!.Status);
     }
 
-    private static List<string> GetErrors(object? badRequestValue)
+    private static List<string> GetErrors(ActionResult<Order> result)
     {
-        Assert.NotNull(badRequestValue);
-        var property = badRequestValue!.GetType().GetProperty("errors");
-        Assert.NotNull(property);
-        var raw = (System.Collections.IEnumerable)property!.GetValue(badRequestValue)!;
-        return raw.Cast<object>().Select(o => o.ToString() ?? string.Empty).ToList();
+        var objectResult = Assert.IsAssignableFrom<ObjectResult>(result.Result);
+        var problemDetails = Assert.IsAssignableFrom<ValidationProblemDetails>(objectResult.Value);
+        return problemDetails.Errors.Values.SelectMany(messages => messages).ToList();
     }
 }

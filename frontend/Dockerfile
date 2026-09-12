@@ -9,14 +9,13 @@ RUN npm ci
 COPY . .
 
 # Vite inlines VITE_* variables into the static bundle at build time (browsers can't read
-# container env vars at runtime), so they must be supplied as build args. These default to
-# the ports docker-compose publishes OrdersApi/InventoryWorker on — override via
-# docker-compose.yml `build.args` (or --build-arg) if those ports change.
+# container env vars at runtime), so they must be supplied as build args. This defaults to
+# the port docker-compose publishes OrdersApi on — override via docker-compose.yml
+# `build.args` (or --build-arg) if that port changes. InventoryWorker has no URL of its own:
+# it's a pure background service with no HTTP surface (see README "Architecture decisions").
 ARG VITE_ORDERS_API_URL=http://localhost:5081
-ARG VITE_INVENTORY_API_URL=http://localhost:5080
 ARG VITE_POLL_INTERVAL_MS=4000
 ENV VITE_ORDERS_API_URL=$VITE_ORDERS_API_URL \
-    VITE_INVENTORY_API_URL=$VITE_INVENTORY_API_URL \
     VITE_POLL_INTERVAL_MS=$VITE_POLL_INTERVAL_MS
 
 RUN npm run build

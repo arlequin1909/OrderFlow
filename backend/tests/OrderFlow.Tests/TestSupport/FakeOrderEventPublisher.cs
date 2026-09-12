@@ -1,4 +1,4 @@
-using OrderFlow.Shared.Contracts;
+using OrdersApi.Contracts;
 using OrdersApi.Messaging;
 
 namespace OrderFlow.Tests.TestSupport;

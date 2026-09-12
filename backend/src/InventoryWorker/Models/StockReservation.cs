@@ -1,15 +1,9 @@
 namespace InventoryWorker.Models;
 
-public enum StockReservationOutcome
-{
-    Reserved,
-    Rejected,
-}
-
 /// <summary>
 /// One row per processed OrderCreated event — the durable idempotency ledger for
-/// <c>OrderCreatedConsumer</c>. A unique index on <see cref="OrderId"/> guarantees an order's
-/// stock is never decremented twice, even under concurrent redelivery.
+/// <c>OrderCreatedEventHandler</c>. A unique index on <see cref="OrderId"/> guarantees an
+/// order's stock is never decremented twice, even under concurrent redelivery.
 /// </summary>
 public class StockReservation
 {
@@ -28,8 +22,8 @@ public class StockReservation
 
     /// <summary>
     /// Whether the StockReserved/StockRejected notification was successfully published.
-    /// When false, the stock change itself is already durable (see README "Manejo de fallos
-    /// del broker") — only the outbound notification still needs to be retried.
+    /// When false, the stock change itself is already durable (see README "Broker failure
+    /// handling") — only the outbound notification still needs to be retried.
     /// </summary>
     public bool ResponseEventPublished { get; set; }
 

@@ -2,17 +2,16 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 
-namespace OrderFlow.Shared.Messaging;
+namespace InventoryWorker.Messaging;
 
 /// <summary>
-/// Base class for RabbitMQ-consuming background services with robust handling of
-/// connection failures:
-///   - The connection is NOT opened eagerly in the constructor or in StartAsync — if it
-///     were, a RabbitMQ outage at boot would throw out of IHostedService.StartAsync, which
-///     stops the whole host. Instead, <see cref="ExecuteAsync"/> retries the initial
-///     connection with backoff (capped at 30s) until it succeeds or the host is stopping,
-///     so a broker outage only delays this consumer — it never crashes the app or blocks
-///     unrelated endpoints (e.g. InventoryWorker's GET /api/stock stays up regardless).
+/// Base class for RabbitMQ-consuming background services with robust handling of connection
+/// failures:
+///   - The connection is NOT opened eagerly in the constructor or in StartAsync — if it were,
+///     a RabbitMQ outage at boot would throw out of IHostedService.StartAsync, which stops
+///     the whole host. Instead, <see cref="ExecuteAsync"/> retries the initial connection
+///     with backoff (capped at 30s) until it succeeds or the host is stopping, so a broker
+///     outage only delays this consumer — it never crashes the app.
 ///   - Once connected, RabbitMQ.Client's AutomaticRecoveryEnabled handles reconnecting (and
 ///     redeclaring queues/consumers) after a later, transient connection drop on its own;
 ///     this base class just logs those transitions for visibility.
@@ -85,13 +84,13 @@ public abstract class RabbitMqConsumerBase : BackgroundService
                 var connection = _factory.CreateConnection();
                 connection.ConnectionShutdown += (_, e) =>
                     _logger.LogWarning(
-                        "Conexión a RabbitMQ perdida ({ReplyText}); el cliente reintentará automáticamente.",
+                        "RabbitMQ connection lost ({ReplyText}); the client will retry automatically.",
                         e.ReplyText);
 
                 if (connection is IAutorecoveringConnection recoveringConnection)
                 {
                     recoveringConnection.RecoverySucceeded += (_, _) =>
-                        _logger.LogInformation("Conexión a RabbitMQ recuperada tras una caída transitoria.");
+                        _logger.LogInformation("RabbitMQ connection recovered after a transient failure.");
                 }
 
                 var channel = connection.CreateModel();
@@ -100,7 +99,7 @@ public abstract class RabbitMqConsumerBase : BackgroundService
                 Connection = connection;
                 Channel = channel;
 
-                _logger.LogInformation("Conectado a RabbitMQ ({Host}:{Port}).", _options.HostName, _options.Port);
+                _logger.LogInformation("Connected to RabbitMQ ({Host}:{Port}).", _options.HostName, _options.Port);
                 return;
             }
             catch (Exception ex) when (RabbitMqTransientErrors.IsTransient(ex))
@@ -110,7 +109,7 @@ public abstract class RabbitMqConsumerBase : BackgroundService
                 var delay = TimeSpan.FromSeconds(delaySeconds);
                 _logger.LogError(
                     ex,
-                    "No se pudo conectar a RabbitMQ ({Host}:{Port}), intento {Attempt}. Reintentando en {Delay}s.",
+                    "Could not connect to RabbitMQ ({Host}:{Port}), attempt {Attempt}. Retrying in {Delay}s.",
                     _options.HostName, _options.Port, attempt, delay.TotalSeconds);
 
                 try

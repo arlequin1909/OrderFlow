@@ -1,15 +1,18 @@
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
-using OrderFlow.Shared.Messaging;
 using OrdersApi.Data;
 using OrdersApi.Messaging;
+using OrdersApi.Requests;
+using OrdersApi.Services;
+using OrdersApi.Validators;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Connection string comes from configuration key "ConnectionStrings:Postgres", which is
 // overridable via the environment variable ConnectionStrings__Postgres (see docker-compose.yml).
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
-    ?? throw new InvalidOperationException("Falta la cadena de conexión 'ConnectionStrings:Postgres'.");
+    ?? throw new InvalidOperationException("Missing connection string 'ConnectionStrings:Postgres'.");
 
 // OrdersApi and InventoryWorker share one physical Postgres instance in this docker-compose
 // setup. EF Core's migrations history table is NOT namespaced per DbContext by default, so
@@ -18,20 +21,34 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 builder.Services.AddDbContext<OrdersDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory_orders")));
 
-// Read-only catalog lookup (SKU existence check) — see CatalogDbContext for the trade-off
-// of sharing the "stock" table instead of calling InventoryWorker over HTTP.
+// Read-only catalog (SKU existence check + GET /api/catalog for the frontend) — see
+// CatalogDbContext for why this reads InventoryWorker's table directly: InventoryWorker is a
+// pure background service with no HTTP surface of its own.
 builder.Services.AddDbContext<CatalogDbContext>(options => options.UseNpgsql(connectionString));
 
 // RabbitMq:* is populated from RabbitMq__HostName, RabbitMq__UserName, RabbitMq__Password, etc.
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 builder.Services.AddSingleton<IOrderEventPublisher, RabbitMqPublisher>();
+builder.Services.AddScoped<IStockOutcomeEventHandler, StockOutcomeEventHandler>();
 builder.Services.AddHostedService<StockOutcomeConsumer>();
+
+builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddScoped<ICatalogService, CatalogService>();
+
+// All input validation for POST /api/orders lives in FluentValidation validators — see
+// Validators/CreateOrderRequestValidator.
+builder.Services.AddValidatorsFromAssemblyContaining<CreateOrderRequestValidator>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     // Serialize enums (e.g. Order.Status) as their string name instead of a numeric index.
     options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
 });
+
+// Standardizes every error response (400 validation problems, 404s, unhandled 5xx) as
+// RFC 7807 ProblemDetails.
+builder.Services.AddProblemDetails();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -39,8 +56,8 @@ builder.Services.AddSwaggerGen(options =>
     {
         Title = "OrderFlow — OrdersApi",
         Version = "v1",
-        Description = "Creación y consulta de pedidos. Publica order-created en RabbitMQ y " +
-            "consume stock-reserved/stock-rejected para confirmar o rechazar el pedido.",
+        Description = "Creates and queries orders. Publishes order-created to RabbitMQ and " +
+            "consumes stock-reserved/stock-rejected to confirm or reject the order.",
     });
 });
 

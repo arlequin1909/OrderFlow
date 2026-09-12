@@ -2,6 +2,7 @@ using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using OrdersApi.Data;
+using OrdersApi.ErrorHandling;
 using OrdersApi.Messaging;
 using OrdersApi.Requests;
 using OrdersApi.Services;
@@ -46,7 +47,10 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 });
 
 // Standardizes every error response (400 validation problems, 404s, unhandled 5xx) as
-// RFC 7807 ProblemDetails.
+// RFC 7807 ProblemDetails. GlobalExceptionHandler is what actually catches unhandled
+// exceptions and routes them through this service — see its doc comment — activated below via
+// app.UseExceptionHandler().
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 
 builder.Services.AddEndpointsApiExplorer();
@@ -78,6 +82,10 @@ using (var scope = app.Services.CreateScope())
     var dbContext = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
     await dbContext.Database.MigrateAsync();
 }
+
+// Must be one of the first middleware in the pipeline so it can catch exceptions thrown by
+// everything after it (CORS, authorization, the controllers themselves).
+app.UseExceptionHandler();
 
 // Swagger UI is intentionally enabled in every environment (including the Docker/Production
 // deployment via docker-compose) so an evaluator can exercise the API directly from
